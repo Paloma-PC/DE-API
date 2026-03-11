@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.pyc
+
+# Virtual environment
+.venv/
+env/
+venv/
+
+# Azure Functions
+local.settings.json
+.python_packages/
+
+# VSCode
+.vscode/
+
+# Mac
+.DS_Store

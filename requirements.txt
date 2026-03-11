@@ -1,0 +1,6 @@
+azure-functions
+pydantic>=2.0
+uuid
+requests
+databricks-sql-connector
+PyJWT[crypto]>=2.0
