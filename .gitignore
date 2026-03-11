@@ -1,0 +1,7 @@
+local.settings.json
+.venv/
+__pycache__/
+.python_packages/
+*.pyc
+.funcignore
+.claude/
