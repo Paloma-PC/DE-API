@@ -4,3 +4,4 @@ uuid
 requests
 databricks-sql-connector
 PyJWT[crypto]>=2.0
+azure-storage-blob

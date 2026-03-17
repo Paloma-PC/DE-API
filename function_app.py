@@ -1,7 +1,10 @@
 import azure.functions as func
 import json
 import logging
+import os
+import uuid as uuid_lib
 from typing import Any
+from azure.storage.blob import BlobServiceClient
 
 # Import services
 from services import DatabricksService
@@ -134,53 +137,24 @@ from datetime import datetime
 
 
 def generate_npt_id() -> str:
-    """Generate a unique NPT ID based on current timestamp"""
-    now = datetime.utcnow()
-    raw = f"NPT-{now.isoformat()}-{id(now)}"
-    hash_hex = hashlib.sha256(raw.encode()).hexdigest()[:12]
-    return f"NPT-{hash_hex.upper()}"
 
 
-@app.route(route="npt", methods=["POST"])
-def create_npt(req: func.HttpRequest) -> func.HttpResponse:
-    """Create a new NPT record"""
+@app.route(route="npt/{id}", methods=["PUT"])
+def update_npt(req: func.HttpRequest) -> func.HttpResponse:
+    """Update an existing NPT record by message_id"""
     try:
+        record_id = req.route_params.get("id")
         body = req.get_json()
 
-        # Validate required fields
-        required_fields = ["customer_name", "well_name_and_number", "event_type", "asset_type"]
-        missing = [f for f in required_fields if not body.get(f)]
-        if missing:
-            return create_response({"error": f"Missing required fields: {', '.join(missing)}"}, 400)
+        # Serialize complex fields
+        files_val = body.get("files", [])
+        if isinstance(files_val, list):
+            files_val = json.dumps(files_val)
 
-        # Get the authenticated user from token
-        created_by = get_authenticated_user(req)
+        time_entries_val = body.get("time_entries", body.get("time_breakdown", []))
+        if isinstance(time_entries_val, list):
+            time_entries_val = json.dumps(time_entries_val)
 
-        # Generate unique NPT ID
-        npt_id = generate_npt_id()
-        now = datetime.utcnow().isoformat()
-
-        # Build record data
-        record = {
-            "npt_id": npt_id,
-            "customer_name": body.get("customer_name"),
-            "well_name_and_number": body.get("well_name_and_number"),
-            "well_number": body.get("well_number", ""),
-            "event_type": body.get("event_type"),
-            "asset_type": body.get("asset_type"),
-            "asset_sub_type": body.get("asset_sub_type", ""),
-            "npt_time_minutes": body.get("npt_time_minutes", 0),
-            "reason": body.get("reason", ""),
-            "solution": body.get("solution", ""),
-            "technician_name": body.get("technician_name", ""),
-            "status": body.get("status", "Open"),
-            "created_by": created_by,
-            "created_at": now,
-            "event_date_format_date": body.get("event_date_format_date", now),
-        }
-
-        # Build INSERT query
-        columns = list(record.keys())
         def format_value(v):
             if v is None:
                 return "NULL"
@@ -190,30 +164,108 @@ def create_npt(req: func.HttpRequest) -> func.HttpResponse:
                 escaped = str(v).replace("'", "''")
                 return f"'{escaped}'"
 
-        values = [format_value(record[col]) for col in columns]
+        updates = {
+            "customer_name": body.get("customer_name", ""),
+            "well_name_and_number": body.get("well_name_and_number", ""),
+            "well_number": body.get("well_number", ""),
+            "well_color": body.get("well_color", ""),
+            "event_type": body.get("event_type", ""),
+            "asset_type": body.get("asset_type", ""),
+            "asset_sub_type": body.get("asset_sub_type", ""),
+            "npt_time_minutes": body.get("npt_time_minutes", 0),
+            "reason": body.get("reason", ""),
+            "solution": body.get("solution", ""),
+            "technician_name": body.get("technician_name", ""),
+            "status": body.get("status", "Open"),
+            "pressure_pumper_name": body.get("pressure_pumper_name", ""),
+            "pressure_pumper_fleet": body.get("pressure_pumper_fleet", ""),
+            "asset_number": body.get("asset_number", ""),
+            "product_type": body.get("product_type", ""),
+            "stage_total": body.get("stage_total", ""),
+            "stage_count": body.get("stage_count", ""),
+            "event_date": body.get("event_date_format_date", ""),
+            "event_date_format_date": body.get("event_date_format_date", ""),
+            "files": files_val,
+            "time_breakdown": time_entries_val,
+        }
 
-        insert_sql = f"""
-            INSERT INTO {NPT_TABLE} ({', '.join(columns)})
-            VALUES ({', '.join(values)})
+        set_clause = ", ".join(
+            f"{col} = {format_value(val)}" for col, val in updates.items()
+        )
+
+        update_sql = f"""
+            UPDATE {NPT_TABLE}
+            SET {set_clause}
+            WHERE message_id = {format_value(record_id)}
         """
 
         with databricks_service._get_connection() as conn:
             with conn.cursor() as cursor:
-                cursor.execute(insert_sql)
+                cursor.execute(update_sql)
 
-        logging.info(f"NPT record created: {npt_id} by {created_by}")
-
-        return create_response({
-            "success": True,
-            "npt_id": npt_id,
-            "created_by": created_by,
-            "created_at": now
-        }, 201)
+        logging.info(f"NPT record updated: {record_id}")
+        return create_response({"success": True, "npt_id": record_id})
 
     except ValueError as e:
         return create_response({"error": f"Invalid request body: {str(e)}"}, 400)
     except Exception as e:
-        logging.error(f"Error creating NPT record: {str(e)}")
+        logging.error(f"Error updating NPT record: {str(e)}")
+        return create_response({"error": str(e)}, 500)
+
+
+# ============================================================================
+# FILE UPLOAD ENDPOINT
+# ============================================================================
+
+@app.route(route="upload", methods=["POST"])
+def upload_file(req: func.HttpRequest) -> func.HttpResponse:
+    """Upload a file to Azure Blob Storage and return the URL"""
+    try:
+        connection_string = os.environ.get("AZURE_STORAGE_CONNECTION_STRING", "")
+        container_name = os.environ.get("AZURE_STORAGE_CONTAINER", "npt-files")
+
+        if not connection_string:
+            return create_response({"error": "Storage not configured"}, 503)
+
+        files = req.files
+        if not files:
+            # Try reading raw body as single file
+            body = req.get_body()
+            if not body:
+                return create_response({"error": "No file provided"}, 400)
+            filename = req.headers.get("x-filename", f"{uuid_lib.uuid4()}.jpg")
+            content_type = req.headers.get("content-type", "application/octet-stream")
+            file_bytes = body
+        else:
+            file_obj = list(files.values())[0]
+            filename = file_obj.filename or f"{uuid_lib.uuid4()}.jpg"
+            content_type = file_obj.content_type or "application/octet-stream"
+            file_bytes = file_obj.stream.read()
+
+        # Generate unique blob name under pac/npt/
+        ext = filename.rsplit(".", 1)[-1] if "." in filename else "jpg"
+        prefix = os.environ.get("AZURE_STORAGE_BLOB_PREFIX", "pac/npt")
+        blob_name = f"{prefix}/{uuid_lib.uuid4()}.{ext}"
+
+        blob_service = BlobServiceClient.from_connection_string(connection_string)
+        container_client = blob_service.get_container_client(container_name)
+
+        # Create container if it doesn't exist
+        try:
+            container_client.create_container()
+        except Exception:
+            pass  # Already exists
+
+        blob_client = container_client.get_blob_client(blob_name)
+        blob_client.upload_blob(file_bytes, overwrite=True, content_settings={"content_type": content_type})
+
+        url = blob_client.url
+        logging.info(f"File uploaded: {url}")
+
+        return create_response({"url": url, "blob_name": blob_name}, 201)
+
+    except Exception as e:
+        logging.error(f"Error uploading file: {str(e)}")
         return create_response({"error": str(e)}, 500)
 
 
@@ -228,7 +280,7 @@ def get_swagger(req: func.HttpRequest) -> func.HttpResponse:
         "openapi": "3.0.0",
         "info": {
             "title": "PAC API",
-            "description": "API del equipo de ingenieria para servir y gestionar datos operacionales.",
+            "description": "Engineering team API for serving and managing operational data.",
             "version": "2.0.0",
             "contact": {
                 "name": "Paloma Pressure Control"
