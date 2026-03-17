@@ -137,6 +137,86 @@ from datetime import datetime
 
 
 def generate_npt_id() -> str:
+    """Generate a unique UUID for new NPT records"""
+    return str(uuid_lib.uuid4())
+
+
+@app.route(route="npt", methods=["POST"])
+def create_npt(req: func.HttpRequest) -> func.HttpResponse:
+    """Create a new NPT record"""
+    try:
+        body = req.get_json()
+
+        required_fields = ["customer_name", "well_name_and_number", "event_type", "asset_type"]
+        missing = [f for f in required_fields if not body.get(f)]
+        if missing:
+            return create_response({"error": f"Missing required fields: {', '.join(missing)}"}, 400)
+
+        message_id = generate_npt_id()
+        author = get_authenticated_user(req)
+        event_date = body.get("event_date_format_date", datetime.utcnow().strftime("%Y-%m-%d"))
+
+        files_val = body.get("files", [])
+        if isinstance(files_val, list):
+            files_val = json.dumps(files_val)
+
+        time_entries_val = body.get("time_entries", body.get("time_breakdown", []))
+        if isinstance(time_entries_val, list):
+            time_entries_val = json.dumps(time_entries_val)
+
+        def format_value(v):
+            if v is None:
+                return "NULL"
+            elif isinstance(v, (int, float)):
+                return str(v)
+            else:
+                escaped = str(v).replace("'", "''")
+                return f"'{escaped}'"
+
+        record = {
+            "message_id": message_id,
+            "author": author,
+            "customer_name": body.get("customer_name", ""),
+            "well_name_and_number": body.get("well_name_and_number", ""),
+            "well_number": body.get("well_number", ""),
+            "well_color": body.get("well_color", ""),
+            "event_type": body.get("event_type", ""),
+            "asset_type": body.get("asset_type", ""),
+            "asset_sub_type": body.get("asset_sub_type", ""),
+            "npt_time_minutes": body.get("npt_time_minutes", 0),
+            "reason": body.get("reason", ""),
+            "solution": body.get("solution", ""),
+            "technician_name": body.get("technician_name", ""),
+            "status": body.get("status", "Open"),
+            "pressure_pumper_name": body.get("pressure_pumper_name", ""),
+            "pressure_pumper_fleet": body.get("pressure_pumper_fleet", ""),
+            "asset_number": body.get("asset_number", ""),
+            "product_type": body.get("product_type", ""),
+            "stage_total": body.get("stage_total", ""),
+            "stage_count": body.get("stage_count", ""),
+            "event_date": event_date,
+            "event_date_format_date": event_date,
+            "files": files_val,
+            "time_breakdown": time_entries_val,
+        }
+
+        columns = ", ".join(record.keys())
+        values = ", ".join(format_value(v) for v in record.values())
+
+        insert_sql = f"INSERT INTO {NPT_TABLE} ({columns}) VALUES ({values})"
+
+        with databricks_service._get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(insert_sql)
+
+        logging.info(f"NPT record created: {message_id}")
+        return create_response({"success": True, "message_id": message_id}, 201)
+
+    except ValueError as e:
+        return create_response({"error": f"Invalid request body: {str(e)}"}, 400)
+    except Exception as e:
+        logging.error(f"Error creating NPT record: {str(e)}")
+        return create_response({"error": str(e)}, 500)
 
 
 @app.route(route="npt/{id}", methods=["PUT"])
