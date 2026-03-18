@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import uuid as uuid_lib
+from datetime import datetime, timezone
 from typing import Any
 from azure.storage.blob import BlobServiceClient
 
@@ -39,7 +40,7 @@ NPT_TABLE = "paloma.discord.npt_tracker"
 def get_all_npt(req: func.HttpRequest) -> func.HttpResponse:
     """Get all NPT Tracker records"""
     try:
-        records = databricks_service.get_all_records_from_table(NPT_TABLE, order_by="event_date_format_date DESC")
+        records = databricks_service.get_all_records_from_table(NPT_TABLE, order_by="event_date_format_date DESC", limit=500)
         return create_response({"data": records, "count": len(records)})
     except Exception as e:
         return create_response({"error": str(e)}, 500)
@@ -132,9 +133,6 @@ def get_npt_by_year_month(req: func.HttpRequest) -> func.HttpResponse:
 # NPT CREATE ENDPOINT
 # ============================================================================
 
-import hashlib
-from datetime import datetime
-
 
 def generate_npt_id() -> str:
     """Generate a unique UUID for new NPT records"""
@@ -154,7 +152,7 @@ def create_npt(req: func.HttpRequest) -> func.HttpResponse:
 
         message_id = generate_npt_id()
         author = get_authenticated_user(req)
-        event_date = body.get("event_date_format_date", datetime.utcnow().strftime("%Y-%m-%d"))
+        event_date = body.get("event_date_format_date", datetime.now(timezone.utc).strftime("%Y-%m-%d"))
 
         files_val = body.get("files", [])
         if isinstance(files_val, list):
